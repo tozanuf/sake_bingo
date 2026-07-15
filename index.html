@@ -229,71 +229,78 @@
       }
     }
     
-    // --- 1. シード値から配置を復元（CANDIDATESの実際の数に基づいてシャッフル） ---
-    function getCardBySeed(seed) {
-      // シャッフルの対象を「100」固定ではなく「実際の候補リストの数」にする
-      const candidates = Array.from({ length: CANDIDATES.length }, (_, i) => i);
+    // --- 1. シード値と「その時の候補数」から配置を復元 ---
+    function getCardBySeed(seed, candidateCount) {
+      // 過去のURLから渡された「当時の候補数」の範囲だけで配列を作成
+      const count = Math.min(CANDIDATES.length, candidateCount);
+      const candidates = Array.from({ length: count }, (_, i) => i);
+      
       let s = seed;
       const lcg = () => {
         s = (s * 1664525 + 1013904223) % 4294967296;
         return s / 4294967296;
       };
-
-      // 存在する候補の数だけシャッフルを回す
+      
       for (let i = candidates.length - 1; i > 0; i--) {
         const j = Math.floor(lcg() * (i + 1));
         [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
       }
-      
-      // シャッフルされた中から先頭の25個を切り出す
       return candidates.slice(0, CARD_SIZE);
     }
     
-    // --- 2. パラメータのエンコード / デコード ---
+    // --- 2. 候補数も含めて9バイトのバイナリにパック ---
     function packState(seed, checked) {
-      const buffer = new ArrayBuffer(8);
+      const buffer = new ArrayBuffer(9); // 9バイト確保
       const view = new DataView(buffer);
-      view.setUint32(0, seed, true);
-
+      
+      view.setUint32(0, seed, true); // 0〜3バイト：シード
+    
       let checkMask = 0;
       for (let i = 0; i < CARD_SIZE; i++) {
         if (checked[i]) checkMask |= (1 << i);
       }
-      view.setUint32(4, checkMask, true);
-
+      view.setUint32(4, checkMask, true); // 4〜7バイト：チェック状態
+      
+      // 8バイト目：現在の候補リストの長さ（最大255まで対応）
+      const countToStore = Math.min(CANDIDATES.length, 255);
+      view.setUint8(8, countToStore);
+    
       const bytes = new Uint8Array(buffer);
       const binaryString = String.fromCharCode(...bytes);
       return btoa(binaryString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     }
-
+  
+    // --- 3. デコードして候補数を取り出す ---
     function unpackState(paramStr) {
       let base64 = paramStr.replace(/-/g, '+').replace(/_/g, '/');
       while (base64.length % 4) base64 += '=';
-
+    
       const binaryString = atob(base64);
-      const buffer = new ArrayBuffer(8);
+      const buffer = new ArrayBuffer(9); // 9バイト
       const bytes = new Uint8Array(buffer);
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-
+    
       const view = new DataView(buffer);
       const seed = view.getUint32(0, true);
       const checkMask = view.getUint32(4, true);
-
+      const candidateCount = view.getUint8(8); // 当時の候補数を復元
+    
       const checked = [];
       for (let i = 0; i < CARD_SIZE; i++) {
         checked.push(((checkMask >> i) & 1) === 1);
       }
-      return { seed, checked };
+      return { seed, checked, candidateCount };
     }
 
     // --- 3. UIの構築と制御 ---
     const gridEl = document.getElementById('bingo-grid');
 
-    function renderGrid() {
+    function renderGrid(candidateCount = CANDIDATES.length) {
       gridEl.innerHTML = '';
-      cardIndices = getCardBySeed(currentSeed);
+      // getCardBySeed に「そのカードの候補数」を渡す
+      cardIndices = getCardBySeed(currentSeed, candidateCount);
 
       for (let i = 0; i < CARD_SIZE; i++) {
         const cell = document.createElement('div');
@@ -340,41 +347,40 @@
 
     // --- 3. 初期化処理（非同期に変更） ---
     async function init() {
-    // まず候補テキストファイルを読み込む（これがないと描画できない）
-    await loadCandidates();
-
-    const urlParams = new URLSearchParams(window.location.search);
-    const dataParam = urlParams.get('data');
-    const localData = localStorage.getItem(STORAGE_KEY);
-
-    let targetData = null;
-    if (dataParam) {
+      await loadCandidates();
+    
+      const urlParams = new URLSearchParams(window.location.search);
+      const dataParam = urlParams.get('data');
+      const localData = localStorage.getItem(STORAGE_KEY);
+    
+      let targetData = null;
+      if (dataParam) {
         targetData = dataParam;
-    } else if (localData) {
+      } else if (localData) {
         targetData = localData;
-    }
-
-    if (targetData) {
+      }
+    
+      if (targetData) {
         try {
-        const { seed, checked } = unpackState(targetData);
-        currentSeed = seed;
-        checkedStates = checked;
+          // 候補数（candidateCount）も一緒に復元
+          const { seed, checked, candidateCount } = unpackState(targetData);
+          currentSeed = seed;
+          checkedStates = checked;
+          renderGrid(candidateCount); // 復元された候補数でグリッド描画
         } catch (e) {
-        console.error("データの復元に失敗しました。新規カードを作ります。", e);
-        generateNewCard();
+          console.error("復元失敗", e);
+          generateNewCard();
         }
-    } else {
+      } else {
         generateNewCard();
-    }
-
-    renderGrid();
-    updateURL(); 
+      }
+      updateURL(); 
     }
     function generateNewCard() {
       currentSeed = Math.floor(Math.random() * 4294967295);
       checkedStates = Array(CARD_SIZE).fill(false);
-      // 中央（12番）はデフォルトでチェックを入れておいても良い
       checkedStates[12] = true; 
+      renderGrid(CANDIDATES.length); // 新規作成時は最新の候補数を使用
       updateURL();
     }
 
