@@ -48,13 +48,35 @@
     color: var(--primary-color);
     letter-spacing: 2px;
   }
+
+  /* --- 追加：BINGO達成時のテキスト演出 --- */
+  .bingo-announce {
+    font-size: 1.8rem;
+    font-weight: 900;
+    color: #ef4444;
+    margin: 10px 0;
+    min-height: 2.2rem; /* 表示領域を確保してガタつきを防ぐ */
+    text-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+    animation: pop 0.3s ease-out;
+  }
+
+  @keyframes pop {
+    0% { transform: scale(0.8); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+
+  /* --- 追加：グリッドを囲うコンテナ（ライン描画の基準） --- */
+  .grid-container {
+    position: relative;
+    margin: 15px 0;
+    width: 100%;
+  }
   
-  /* ビンゴグリッド（画面幅に合わせて縮む仕様に） */
+  /* ビンゴグリッド */
   .grid {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
     gap: 6px; /* スマホ用に隙間を狭く */
-    margin: 15px 0;
     width: 100%;
   }
   
@@ -75,6 +97,7 @@
     overflow: hidden; /* 万が一のはみ出し防止 */
     padding: 2px;
     box-sizing: border-box;
+    z-index: 2; /* ラインの下に隠れないように最小限の優先度 */
   }
   
   .cell:hover {
@@ -100,6 +123,50 @@
     background-color: var(--cell-active);
     border-color: var(--cell-active-border);
     color: #7f1d1d;
+  }
+
+  /* --- 追加：ビンゴの半透明ライン --- */
+  .bingo-line {
+    position: absolute;
+    background-color: rgba(239, 68, 68, 0.45); /* 半透明の赤 */
+    border-radius: 10px;
+    pointer-events: none; /* マスのクリックイベントを透過する */
+    z-index: 5; /* マス(z-index:2)の上に重ねる */
+    transition: all 0.3s ease;
+  }
+
+  /* 縦ライン */
+  .bingo-line.vertical {
+    width: 8px;
+    height: 100%;
+    top: 0;
+    transform: translateX(-50%);
+  }
+
+  /* 横ライン */
+  .bingo-line.horizontal {
+    height: 8px;
+    width: 100%;
+    left: 0;
+    transform: translateY(-50%);
+  }
+
+  /* 斜めライン1 (左上から右下) */
+  .bingo-line.diagonal-1 {
+    height: 8px;
+    width: 135%;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(45deg);
+  }
+
+  /* 斜めライン2 (右上から左下) */
+  .bingo-line.diagonal-2 {
+    height: 8px;
+    width: 135%;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) rotate(-45deg);
   }
   
   /* 操作ボタン（スマホで並んで収まるように） */
@@ -177,9 +244,13 @@
 
   <div class="container">
     <h1>酒BINGO🍶</h1>
+    <p style="font-size: 0.85rem; color: #6b7280; margin: 0;">マスをクリックするとURLが自動更新されます</p>
     
-    <div class="grid" id="bingo-grid">
-      </div>
+    <div id="bingo-announce" class="bingo-announce"></div>
+
+    <div class="grid-container" id="grid-container">
+      <div class="grid" id="bingo-grid"></div>
+    </div>
 
     <div class="btn-group">
       <button id="btn-share">この状態をシェア (URLコピー)</button>
@@ -294,19 +365,77 @@
       return { seed, checked, candidateCount };
     }
 
-    // --- 3. UIの構築と制御 ---
+    // --- 4. ビンゴ判定 ＆ ライン描画ロジック ---
+    function checkBingo() {
+      const container = document.getElementById('grid-container');
+      const announceEl = document.getElementById('bingo-announce');
+
+      // すでに表示されているラインをすべて削除
+      document.querySelectorAll('.bingo-line').forEach(el => el.remove());
+      announceEl.textContent = "";
+
+      // ビンゴ判定する組み合わせ（12種類）
+      const lines = [
+        // 横5行（posは上からの%位置）
+        { indices: [0, 1, 2, 3, 4], type: 'horizontal', pos: 10 },
+        { indices: [5, 6, 7, 8, 9], type: 'horizontal', pos: 30 },
+        { indices: [10, 11, 12, 13, 14], type: 'horizontal', pos: 50 },
+        { indices: [15, 16, 17, 18, 19], type: 'horizontal', pos: 70 },
+        { indices: [20, 21, 22, 23, 24], type: 'horizontal', pos: 90 },
+
+        // 縦5列（posは左からの%位置）
+        { indices: [0, 5, 10, 15, 20], type: 'vertical', pos: 10 },
+        { indices: [1, 6, 11, 16, 21], type: 'vertical', pos: 30 },
+        { indices: [2, 7, 12, 17, 22], type: 'vertical', pos: 50 },
+        { indices: [3, 8, 13, 18, 23], type: 'vertical', pos: 70 },
+        { indices: [4, 9, 14, 19, 24], type: 'vertical', pos: 90 },
+
+        // 斜め2列
+        { indices: [0, 6, 12, 18, 24], type: 'diagonal-1' },
+        { indices: [4, 8, 12, 16, 20], type: 'diagonal-2' }
+      ];
+
+      let bingoCount = 0;
+
+      lines.forEach(line => {
+        const isComplete = line.indices.every(idx => checkedStates[idx]);
+
+        if (isComplete) {
+          bingoCount++;
+
+          // ライン要素を生成
+          const lineEl = document.createElement('div');
+          lineEl.classList.add('bingo-line', line.type);
+
+          // 縦・横の表示位置設定
+          if (line.type === 'horizontal') {
+            lineEl.style.top = `${line.pos}%`;
+          } else if (line.type === 'vertical') {
+            lineEl.style.left = `${line.pos}%`;
+          }
+
+          container.appendChild(lineEl);
+        }
+      });
+
+      // BINGO数を表示
+      if (bingoCount > 0) {
+        announceEl.textContent = `🎉 ${bingoCount} BINGO! 🎉`;
+      }
+    }
+
+    // --- 5. UIの構築と制御 ---
     const gridEl = document.getElementById('bingo-grid');
 
     function renderGrid(candidateCount = CANDIDATES.length) {
       gridEl.innerHTML = '';
-      // getCardBySeed に「そのカードの候補数」を渡す
       cardIndices = getCardBySeed(currentSeed, candidateCount);
 
       for (let i = 0; i < CARD_SIZE; i++) {
         const cell = document.createElement('div');
         cell.classList.add('cell');
         
-        // 中央(インデックス12)は「FREE」にする仕様
+        // 中央(インデックス12)は「FREE」
         if (i === 12) {
           cell.classList.add('free');
           cell.textContent = "FREE";
@@ -327,25 +456,29 @@
             cell.classList.remove('active');
           }
           updateURL();
+          checkBingo(); // クリックするたびに判定
         });
 
         gridEl.appendChild(cell);
       }
+
+      // 初回レンダリング時にもビンゴ判定を行う
+      checkBingo();
     }
 
     // URLの状態を現在のプレイ状況に同期し、さらにlocalStorageにも保存する
     function updateURL() {
-    const code = packState(currentSeed, checkedStates);
-    
-    // 1. localStorage に保存
-    localStorage.setItem(STORAGE_KEY, code);
+      const code = packState(currentSeed, checkedStates);
+      
+      // 1. localStorage に保存
+      localStorage.setItem(STORAGE_KEY, code);
 
-    // 2. URLを更新
-    const newUrl = `${window.location.origin}${window.location.pathname}?data=${code}`;
-    window.history.replaceState(null, '', newUrl);
+      // 2. URLを更新
+      const newUrl = `${window.location.origin}${window.location.pathname}?data=${code}`;
+      window.history.replaceState(null, '', newUrl);
     }
 
-    // --- 3. 初期化処理（非同期に変更） ---
+    // --- 6. 初期化処理（非同期に変更） ---
     async function init() {
       await loadCandidates();
     
@@ -362,7 +495,6 @@
     
       if (targetData) {
         try {
-          // 候補数（candidateCount）も一緒に復元
           const { seed, checked, candidateCount } = unpackState(targetData);
           currentSeed = seed;
           checkedStates = checked;
@@ -376,6 +508,7 @@
       }
       updateURL(); 
     }
+
     function generateNewCard() {
       currentSeed = Math.floor(Math.random() * 4294967295);
       checkedStates = Array(CARD_SIZE).fill(false);
