@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>URL同期式 ビンゴゲーム</title>
+  <style>
+    :root {
+      --primary-color: #4f46e5;
+      --primary-hover: #4338ca;
+      --bg-color: #f3f4f6;
+      --card-bg: #ffffff;
+      --cell-bg: #f9fafb;
+      --cell-active: #fca5a5;
+      --cell-active-border: #ef4444;
+      --text-color: #1f2937;
+    }
+
+    body {
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+
+    .container {
+      background: var(--card-bg);
+      padding: 30px;
+      border-radius: 20px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+      text-align: center;
+      max-width: 450px;
+      width: 100%;
+    }
+
+    h1 {
+      margin-top: 0;
+      font-size: 2rem;
+      color: var(--primary-color);
+      letter-spacing: 2px;
+    }
+
+    /* ビンゴグリッド */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+      margin: 25px 0;
+    }
+
+    .cell {
+      aspect-ratio: 1;
+      background-color: var(--cell-bg);
+      border: 2px solid #e5e7eb;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 1.1rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .cell:hover {
+      transform: scale(1.05);
+      border-color: var(--primary-color);
+    }
+
+    /* 穴が開いた状態 */
+    .cell.active {
+      background-color: var(--cell-active);
+      border-color: var(--cell-active-border);
+      color: #7f1d1d;
+      text-shadow: 0 1px 1px rgba(255, 255, 255, 0.5);
+    }
+
+    /* 中央のFREEマス */
+    .cell.free {
+      background-color: #fef3c7;
+      border-color: #f59e0b;
+      color: #92400e;
+    }
+    .cell.free.active {
+      background-color: var(--cell-active);
+      border-color: var(--cell-active-border);
+      color: #7f1d1d;
+    }
+
+    /* 操作ボタン */
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      margin-top: 20px;
+    }
+
+    button {
+      background-color: var(--primary-color);
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      font-size: 0.95rem;
+      font-weight: bold;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background-color: var(--primary-hover);
+    }
+
+    button.secondary {
+      background-color: #6b7280;
+    }
+    button.secondary:hover {
+      background-color: #4b5563;
+    }
+
+    /* コピーメッセージ */
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      background: #374151;
+      color: white;
+      padding: 10px 20px;
+      border-radius: 30px;
+      font-size: 0.9rem;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      pointer-events: none;
+    }
+    .toast.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h1>BINGO</h1>
+    <p style="font-size: 0.85rem; color: #6b7280; margin: 0;">マスをクリックするとURLが自動更新されます</p>
+    
+    <div class="grid" id="bingo-grid">
+      </div>
+
+    <div class="btn-group">
+      <button id="btn-share">この状態をシェア (URLコピー)</button>
+      <button id="btn-reset" class="secondary">新しく作り直す</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast">URLをクリップボードにコピーしました！</div>
+
+  <script>
+    // --- 候補データ（100種類） ---
+    let CANDIDATES = []; // 空配列にしておき、ファイルから読み込む
+    // キー名を定義しておく
+    const STORAGE_KEY = 'bingo_play_state';
+
+    const CARD_SIZE = 25;
+    let currentSeed = 0;
+    let checkedStates = Array(CARD_SIZE).fill(false);
+    let cardIndices = []; // 25マスの候補インデックス
+
+    // --- 0. 外部テキストファイルを読み込む処理（動的サイズ対応） ---
+    async function loadCandidates() {
+      try {
+        const response = await fetch('candidates.txt');
+        if (!response.ok) throw new Error('ファイルの読み込みに失敗しました');
+        
+        const text = await response.text();
+        
+        // 改行で分割し、空行を排除
+        CANDIDATES = text.split(/\r?\n/).map(line => line.trim()).filter(line => line !== "");
+        
+        // 【追加】25個未満の場合はビンゴが作れないのでエラーにする
+        if (CANDIDATES.length < CARD_SIZE) {
+          alert(`エラー: 候補リストが ${CANDIDATES.length} 個しかありません。ビンゴを作るには最低でも ${CARD_SIZE} 個の候補が必要です！`);
+          // 最低限動かすためのダミー
+          while (CANDIDATES.length < CARD_SIZE) {
+            CANDIDATES.push(`予備枠 No.${CANDIDATES.length + 1}`);
+          }
+        }
+        
+        console.log(`候補リストをロードしました。合計: ${CANDIDATES.length}件`);
+
+      } catch (error) {
+        console.error('候補リストの読み込みエラー:', error);
+        // 読み込み失敗時のバックアップ（25個のダミーデータ）
+        CANDIDATES = Array.from({ length: CARD_SIZE }, (_, i) => `ダミー No.${i + 1}`);
+      }
+    }
+    
+    // --- 1. シード値から配置を復元（CANDIDATESの実際の数に基づいてシャッフル） ---
+    function getCardBySeed(seed) {
+      // シャッフルの対象を「100」固定ではなく「実際の候補リストの数」にする
+      const candidates = Array.from({ length: CANDIDATES.length }, (_, i) => i);
+      let s = seed;
+      const lcg = () => {
+        s = (s * 1664525 + 1013904223) % 4294967296;
+        return s / 4294967296;
+      };
+
+      // 存在する候補の数だけシャッフルを回す
+      for (let i = candidates.length - 1; i > 0; i--) {
+        const j = Math.floor(lcg() * (i + 1));
+        [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+      }
+      
+      // シャッフルされた中から先頭の25個を切り出す
+      return candidates.slice(0, CARD_SIZE);
+    }
+    
+    // --- 2. パラメータのエンコード / デコード ---
+    function packState(seed, checked) {
+      const buffer = new ArrayBuffer(8);
+      const view = new DataView(buffer);
+      view.setUint32(0, seed, true);
+
+      let checkMask = 0;
+      for (let i = 0; i < CARD_SIZE; i++) {
+        if (checked[i]) checkMask |= (1 << i);
+      }
+      view.setUint32(4, checkMask, true);
+
+      const bytes = new Uint8Array(buffer);
+      const binaryString = String.fromCharCode(...bytes);
+      return btoa(binaryString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function unpackState(paramStr) {
+      let base64 = paramStr.replace(/-/g, '+').replace(/_/g, '/');
+      while (base64.length % 4) base64 += '=';
+
+      const binaryString = atob(base64);
+      const buffer = new ArrayBuffer(8);
+      const bytes = new Uint8Array(buffer);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const view = new DataView(buffer);
+      const seed = view.getUint32(0, true);
+      const checkMask = view.getUint32(4, true);
+
+      const checked = [];
+      for (let i = 0; i < CARD_SIZE; i++) {
+        checked.push(((checkMask >> i) & 1) === 1);
+      }
+      return { seed, checked };
+    }
+
+    // --- 3. UIの構築と制御 ---
+    const gridEl = document.getElementById('bingo-grid');
+
+    function renderGrid() {
+      gridEl.innerHTML = '';
+      cardIndices = getCardBySeed(currentSeed);
+
+      for (let i = 0; i < CARD_SIZE; i++) {
+        const cell = document.createElement('div');
+        cell.classList.add('cell');
+        
+        // 中央(インデックス12)は「FREE」にする仕様
+        if (i === 12) {
+          cell.classList.add('free');
+          cell.textContent = "FREE";
+        } else {
+          cell.textContent = CANDIDATES[cardIndices[i]];
+        }
+
+        if (checkedStates[i]) {
+          cell.classList.add('active');
+        }
+
+        // クリックした時の挙動
+        cell.addEventListener('click', () => {
+          checkedStates[i] = !checkedStates[i];
+          if (checkedStates[i]) {
+            cell.classList.add('active');
+          } else {
+            cell.classList.remove('active');
+          }
+          updateURL();
+        });
+
+        gridEl.appendChild(cell);
+      }
+    }
+
+    // URLの状態を現在のプレイ状況に同期し、さらにlocalStorageにも保存する
+    function updateURL() {
+    const code = packState(currentSeed, checkedStates);
+    
+    // 1. localStorage に保存
+    localStorage.setItem(STORAGE_KEY, code);
+
+    // 2. URLを更新
+    const newUrl = `${window.location.origin}${window.location.pathname}?data=${code}`;
+    window.history.replaceState(null, '', newUrl);
+    }
+
+    // --- 3. 初期化処理（非同期に変更） ---
+    async function init() {
+    // まず候補テキストファイルを読み込む（これがないと描画できない）
+    await loadCandidates();
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const dataParam = urlParams.get('data');
+    const localData = localStorage.getItem(STORAGE_KEY);
+
+    let targetData = null;
+    if (dataParam) {
+        targetData = dataParam;
+    } else if (localData) {
+        targetData = localData;
+    }
+
+    if (targetData) {
+        try {
+        const { seed, checked } = unpackState(targetData);
+        currentSeed = seed;
+        checkedStates = checked;
+        } catch (e) {
+        console.error("データの復元に失敗しました。新規カードを作ります。", e);
+        generateNewCard();
+        }
+    } else {
+        generateNewCard();
+    }
+
+    renderGrid();
+    updateURL(); 
+    }
+    function generateNewCard() {
+      currentSeed = Math.floor(Math.random() * 4294967295);
+      checkedStates = Array(CARD_SIZE).fill(false);
+      // 中央（12番）はデフォルトでチェックを入れておいても良い
+      checkedStates[12] = true; 
+      updateURL();
+    }
+
+    // --- イベントリスナー ---
+    document.getElementById('btn-reset').addEventListener('click', () => {
+      if (confirm('新しいビンゴカードを生成しますか？現在開けた穴はリセットされます。')) {
+        generateNewCard();
+        renderGrid();
+      }
+    });
+
+    document.getElementById('btn-share').addEventListener('click', () => {
+      navigator.clipboard.writeText(window.location.href).then(() => {
+        const toast = document.getElementById('toast');
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 2000);
+      });
+    });
+
+    // 起動！
+    init();
+  </script>
+</body>
+</html>
